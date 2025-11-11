@@ -6,6 +6,13 @@
 
 This repository contains the starter code for Assignment 2, focusing on attention-based multimodal sensor fusion for heterogeneous sensor streams.
 
+
+## 🧪 Testing My Submission
+
+1. fix "data_dir" in prep_dataset.sh. you should fix raw_dir to dataset path, out_dir to any path you want.
+2. fix "data_dir" in config/base.yaml, base_late.yaml, base_early.yaml. this data_dir should be the path in step 1.
+3. run run.sh / then eval.sh
+
 ## 🚀 Quick Start
 
 ### Local Environment Setup

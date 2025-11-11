@@ -1,0 +1,92 @@
+{
+  "full_modalities": {
+    "accuracy": 0.7376744151115417,
+    "f1_macro": 0.7284372084660592
+  },
+  "single_modalities": {
+    "imu_hand": {
+      "accuracy": 0.5767441987991333,
+      "f1_macro": 0.5009905130407811
+    },
+    "imu_chest": {
+      "accuracy": 0.7516279220581055,
+      "f1_macro": 0.744852042339668
+    },
+    "imu_ankle": {
+      "accuracy": 0.34418603777885437,
+      "f1_macro": 0.26330362369948923
+    },
+    "heart_rate": {
+      "accuracy": 0.12279069423675537,
+      "f1_macro": 0.018302828618968387
+    }
+  },
+  "all_combinations": {
+    "imu_hand": {
+      "accuracy": 0.5767441987991333,
+      "f1_macro": 0.5009905130407811
+    },
+    "imu_chest": {
+      "accuracy": 0.7516279220581055,
+      "f1_macro": 0.744852042339668
+    },
+    "imu_ankle": {
+      "accuracy": 0.34418603777885437,
+      "f1_macro": 0.26330362369948923
+    },
+    "heart_rate": {
+      "accuracy": 0.12279069423675537,
+      "f1_macro": 0.018302828618968387
+    },
+    "imu_hand+imu_chest": {
+      "accuracy": 0.7665116190910339,
+      "f1_macro": 0.755340612500989
+    },
+    "imu_hand+imu_ankle": {
+      "accuracy": 0.49674418568611145,
+      "f1_macro": 0.4563114982781378
+    },
+    "imu_hand+heart_rate": {
+      "accuracy": 0.57302325963974,
+      "f1_macro": 0.4921064960814973
+    },
+    "imu_chest+imu_ankle": {
+      "accuracy": 0.7265116572380066,
+      "f1_macro": 0.7205485246077284
+    },
+    "imu_chest+heart_rate": {
+      "accuracy": 0.7488372325897217,
+      "f1_macro": 0.7448717531448047
+    },
+    "imu_ankle+heart_rate": {
+      "accuracy": 0.34046512842178345,
+      "f1_macro": 0.260054033368272
+    },
+    "imu_hand+imu_chest+imu_ankle": {
+      "accuracy": 0.7386046648025513,
+      "f1_macro": 0.7289154255803038
+    },
+    "imu_hand+imu_chest+heart_rate": {
+      "accuracy": 0.7655813694000244,
+      "f1_macro": 0.753617634574208
+    },
+    "imu_hand+imu_ankle+heart_rate": {
+      "accuracy": 0.5032557845115662,
+      "f1_macro": 0.4665121265014562
+    },
+    "imu_chest+imu_ankle+heart_rate": {
+      "accuracy": 0.7311627864837646,
+      "f1_macro": 0.7278191054298607
+    },
+    "imu_hand+imu_chest+imu_ankle+heart_rate": {
+      "accuracy": 0.7376744151115417,
+      "f1_macro": 0.7284372084660592
+    }
+  },
+  "modality_importance": {
+    "imu_hand": 0.201094406081346,
+    "imu_chest": 0.6086929398279269,
+    "imu_ankle": -0.07095059584158002,
+    "heart_rate": -0.1192620582491471
+  }
+}

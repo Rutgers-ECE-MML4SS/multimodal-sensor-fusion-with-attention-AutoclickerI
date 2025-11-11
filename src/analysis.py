@@ -34,8 +34,8 @@ def plot_fusion_comparison(
     """
     # Extract data
     strategies = list(results['results'].keys())
-    accuracies = [results['results'][s]['accuracy'] for s in strategies]
-    f1_scores = [results['results'][s]['f1_macro'] for s in strategies]
+    accuracies = [results['results'][s]['test_accuracy'] for s in strategies]
+    f1_scores = [results['results'][s]['test_f1_macro'] for s in strategies]
     eces = [results['results'][s]['ece'] for s in strategies]
     inference_times = [results['results'][s]['inference_ms'] for s in strategies]
     

@@ -10,7 +10,39 @@ Implements lightweight encoders suitable for CPU training:
 import torch
 import torch.nn as nn
 from typing import Optional
+import math
 
+def masked_mean(x: torch.Tensor, mask: Optional[torch.Tensor], dim: int) -> torch.Tensor:
+    """
+    x: (..., T, D) or (B, T, D)
+    mask: (..., T) with 1 for valid, 0 for pad
+    returns mean over dim with mask; if mask sum is 0, returns zeros
+    """
+    if mask is None:
+        return x.mean(dim=dim)
+    # expand mask to x shape for broadcast
+    while mask.dim() < x.dim():
+        mask = mask.unsqueeze(-1)
+    mask = mask.to(x.dtype)
+    s = (x * mask).sum(dim=dim)
+    denom = mask.sum(dim=dim).clamp_min(1e-9)
+    return s / denom
+
+class SinusoidalPositionalEncoding(nn.Module):
+    def __init__(self, d_model: int, max_len: int = 10000):
+        super().__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float32).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2, dtype=torch.float32) *
+                             (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe, persistent=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, T, D)
+        T = x.size(1)
+        return x + self.pe[:T].unsqueeze(0)
 
 class SequenceEncoder(nn.Module):
     """
@@ -48,33 +80,52 @@ class SequenceEncoder(nn.Module):
         
         if encoder_type == 'lstm':
             # TODO: Implement LSTM encoder
-            # self.rnn = nn.LSTM(input_dim, hidden_dim, num_layers, 
-            #                    batch_first=True, dropout=dropout)
-            # self.projection = nn.Linear(hidden_dim, output_dim)
+            self.rnn = nn.LSTM(input_dim, hidden_dim, num_layers, 
+                               batch_first=True, dropout=dropout)
+            self.projection = nn.Linear(hidden_dim, output_dim)
             pass
             
         elif encoder_type == 'gru':
             # TODO: Implement GRU encoder
             # Similar to LSTM
+            self.rnn = nn.GRU(input_dim, hidden_dim, num_layers, 
+                               batch_first=True, dropout=dropout)
+            self.projection = nn.Linear(hidden_dim, output_dim)
             pass
             
         elif encoder_type == 'cnn':
             # TODO: Implement 1D CNN encoder
             # Stack of Conv1d -> BatchNorm -> ReLU -> Pool
             # Example:
-            # self.conv1 = nn.Conv1d(input_dim, hidden_dim, kernel_size=3, padding=1)
-            # self.conv2 = nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=1)
-            # self.pool = nn.AdaptiveAvgPool1d(1)
+            self.conv = nn.Sequential(
+                nn.Conv1d(input_dim, hidden_dim // 2, kernel_size=5, padding=2),
+                nn.BatchNorm1d(hidden_dim // 2),
+                nn.ReLU(inplace=True),
+                nn.Conv1d(hidden_dim // 2, hidden_dim, kernel_size=3, padding=1),
+                nn.BatchNorm1d(hidden_dim),
+                nn.ReLU(inplace=True),
+            )
+            self.pool = nn.AdaptiveAvgPool1d(1)
+            self.projection = nn.Linear(hidden_dim, output_dim)
+            self.drop = nn.Dropout(dropout)
             pass
             
         elif encoder_type == 'transformer':
             # TODO: Implement Transformer encoder
-            # encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=4)
-            # self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+            self.input_proj = nn.Linear(input_dim, hidden_dim)
+            self.posenc = SinusoidalPositionalEncoding(hidden_dim)
+            enc_layer = nn.TransformerEncoderLayer(
+                d_model=hidden_dim, nhead=4, dim_feedforward=hidden_dim * 2,
+                dropout=dropout, batch_first=True, activation='gelu'
+            )
+            self.transformer = nn.TransformerEncoder(enc_layer, num_layers=num_layers)
+            self.norm = nn.LayerNorm(hidden_dim)
+            self.projection = nn.Linear(hidden_dim, output_dim)
+            self.drop = nn.Dropout(dropout)
             pass
         else:
             raise ValueError(f"Unknown encoder type: {encoder_type}")
-        
+        return
         raise NotImplementedError(f"Implement {encoder_type} sequence encoder")
     
     def forward(
@@ -95,7 +146,62 @@ class SequenceEncoder(nn.Module):
         # TODO: Implement forward pass based on encoder_type
         # Handle variable-length sequences if lengths provided
         # Return fixed-size embedding via pooling or taking last hidden state
-        
+        B, T, _ = sequence.shape
+
+        if self.encoder_type in ['lstm', 'gru']:
+            if lengths is not None:
+                packed = nn.utils.rnn.pack_padded_sequence(
+                    sequence, lengths.cpu(), batch_first=True, enforce_sorted=False
+                )
+                outputs, h_n = self.rnn(packed)
+                # h_n: (num_layers, B, H) for GRU, (num_layers, B, H) for LSTM's hidden
+                if self.encoder_type == 'lstm':
+                    # h_n is a tuple (h, c)
+                    # after pack, rnn returns (output, (h_n, c_n))
+                    # but above we overwrote h_n; retrieve properly:
+                    packed_out, (h_last, _) = self.rnn(packed)
+                    last = h_last[-1]  # (B,H)
+                else:
+                    # GRU
+                    _, h_last = self.rnn(packed)  # type: ignore[assignment]
+                    last = h_last[-1]
+            else:
+                outputs, h = self.rnn(sequence)
+                if self.encoder_type == 'lstm':
+                    # h is (h_n, c_n)
+                    h_n, _ = h  # type: ignore[misc]
+                    last = h_n[-1]
+                else:
+                    last = h[-1]  # type: ignore[index]
+
+            return self.projection(last)
+
+        elif self.encoder_type == 'cnn':
+            # (B, T, C) -> (B, C, T)
+            x = sequence.transpose(1, 2)
+            x = self.conv(x)                  # (B, H, T)
+            x = self.pool(x).squeeze(-1)      # (B, H)
+            x = self.drop(x)
+            return self.projection(x)
+
+        elif self.encoder_type == 'transformer':
+            x = self.input_proj(sequence)     # (B, T, H)
+            x = self.posenc(x)
+            key_padding_mask = None
+            if lengths is not None:
+                # True where PAD
+                mask = torch.arange(T, device=sequence.device).unsqueeze(0) >= lengths.unsqueeze(1)
+                key_padding_mask = mask  # (B,T) bool
+            x = self.transformer(x, src_key_padding_mask=key_padding_mask)
+            x = self.norm(x)
+            # masked mean pooling over time
+            valid_mask = None
+            if lengths is not None:
+                valid_mask = ~key_padding_mask  # True for valid
+                valid_mask = valid_mask.to(x.dtype)
+            pooled = masked_mean(x, valid_mask, dim=1)
+            pooled = self.drop(pooled)
+            return self.projection(pooled)
         raise NotImplementedError("Implement sequence encoder forward pass")
 
 
@@ -128,11 +234,19 @@ class FrameEncoder(nn.Module):
         # TODO: Implement frame encoder
         # 1. Frame-level processing (optional MLP)
         # 2. Temporal aggregation (pooling or attention)
+
+        # 1) Frame-level lightweight MLP
+        self.frame_mlp = nn.Sequential(
+            nn.Linear(frame_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
         
         if temporal_pooling == 'attention':
             # TODO: Implement attention-based pooling
-            # Learn which frames are important
-            # self.attention = nn.Linear(frame_dim, 1)
+            # Learned query-style attention
+            self.att_query = nn.Parameter(torch.randn(hidden_dim))
             pass
         elif temporal_pooling in ['average', 'max']:
             # Simple pooling, no learnable parameters needed
@@ -142,7 +256,13 @@ class FrameEncoder(nn.Module):
         
         # TODO: Add projection layer
         # self.projection = nn.Sequential(...)
-        
+
+        # 3) Projection to output
+        self.projection = nn.Sequential(
+            nn.Linear(hidden_dim, output_dim),
+            nn.LayerNorm(output_dim),
+        )
+        return
         raise NotImplementedError("Implement frame encoder")
     
     def forward(
@@ -165,6 +285,23 @@ class FrameEncoder(nn.Module):
         # 2. Apply temporal pooling
         # 3. Project to output dimension
         
+        x = self.frame_mlp(frames)  # (B, F, H)
+
+        if self.temporal_pooling == 'average':
+            pooled = masked_mean(x, mask, dim=1)
+        elif self.temporal_pooling == 'max':
+            if mask is not None:
+                # set padded to large negative so they don't win max
+                m = mask.unsqueeze(-1).to(dtype=x.dtype)
+                x_masked = x * m + (1.0 - m) * (-1e9)
+            else:
+                x_masked = x
+            pooled, _ = x_masked.max(dim=1)
+            pooled = torch.nan_to_num(pooled, nan=0.0, neginf=0.0, posinf=0.0)
+        else:  # attention
+            pooled = self.attention_pool(x, mask)
+
+        return self.projection(pooled)
         raise NotImplementedError("Implement frame encoder forward pass")
     
     def attention_pool(
@@ -188,6 +325,18 @@ class FrameEncoder(nn.Module):
         # 3. Softmax to get weights
         # 4. Weighted sum of frames
         
+        B, F, H = frames.shape
+        # scores = frames · q
+        scores = torch.einsum('bfh,h->bf', frames, self.att_query)  # (B,F)
+
+        if mask is not None:
+            scores = scores.masked_fill(~mask.bool(), float('-inf'))
+
+        attn = torch.softmax(scores, dim=-1)
+        attn = torch.nan_to_num(attn, nan=0.0, neginf=0.0, posinf=0.0)  # all-masked guard
+
+        pooled = torch.einsum('bf,bfh->bh', attn, frames)  # weighted sum
+        return pooled
         raise NotImplementedError("Implement attention pooling")
 
 
@@ -226,19 +375,19 @@ class SimpleMLPEncoder(nn.Module):
         current_dim = input_dim
         
         # TODO: Add hidden layers
-        # for i in range(num_layers):
-        #     layers.append(nn.Linear(current_dim, hidden_dim))
-        #     if batch_norm:
-        #         layers.append(nn.BatchNorm1d(hidden_dim))
-        #     layers.append(nn.ReLU())
-        #     layers.append(nn.Dropout(dropout))
-        #     current_dim = hidden_dim
+        for i in range(num_layers):
+            layers.append(nn.Linear(current_dim, hidden_dim))
+            if batch_norm:
+                layers.append(nn.BatchNorm1d(hidden_dim))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout))
+            current_dim = hidden_dim
         
         # TODO: Add output layer
-        # layers.append(nn.Linear(current_dim, output_dim))
+        layers.append(nn.Linear(current_dim, output_dim))
         
-        # self.encoder = nn.Sequential(*layers)
-        
+        self.encoder = nn.Sequential(*layers)
+        return
         raise NotImplementedError("Implement MLP encoder")
     
     def forward(self, features: torch.Tensor) -> torch.Tensor:
@@ -252,8 +401,7 @@ class SimpleMLPEncoder(nn.Module):
             encoding: (batch_size, output_dim) - encoded features
         """
         # TODO: Implement forward pass
-        # return self.encoder(features)
-        
+        return self.encoder(features)
         raise NotImplementedError("Implement MLP encoder forward pass")
 
 
@@ -290,7 +438,8 @@ def build_encoder(
             output_dim=output_dim,
             **encoder_config
         )
-    elif modality in ['imu', 'audio', 'mocap', 'accelerometer']:
+    seq_keywords = ['imu', 'accelerometer', 'accel', 'gyro', 'mag', 'mocap', 'audio', 'heart_rate', 'hr', 'ecg', 'ppg']
+    if any(k in modality for k in seq_keywords):
         return SequenceEncoder(
             input_dim=input_dim,
             output_dim=output_dim,
